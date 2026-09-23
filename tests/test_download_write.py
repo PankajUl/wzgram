@@ -130,3 +130,37 @@ async def test_a_download_ends_when_its_workers_do(tmp_path):
     )
 
     assert path is not None
+
+
+class CountingSession(FakeSession):
+    def __init__(self, chunks):
+        super().__init__(chunks)
+        self.active = 0
+        self.peak = 0
+
+    async def invoke(self, query, **kwargs):
+        self.active += 1
+        self.peak = max(self.peak, self.active)
+        await asyncio.sleep(0.01)
+        self.active -= 1
+        return await super().invoke(query, **kwargs)
+
+
+async def test_parallel_downloads_share_one_inflight_cap(tmp_path):
+    chunks = [bytes([i]) * CHUNK for i in range(12)]
+    client = FakeClient(chunks)
+    client.get_file_semaphore = asyncio.Semaphore(4)
+    client.session = CountingSession(chunks)
+
+    paths = await asyncio.gather(*(
+        client.handle_download(
+            (file_id(), str(tmp_path), f"out{i}.bin", False, len(chunks) * CHUNK, None, ())
+        )
+        for i in range(4)
+    ))
+
+    for path in paths:
+        with open(path, "rb") as f:
+            assert f.read() == b"".join(chunks)
+
+    assert client.session.peak <= 8 + 4

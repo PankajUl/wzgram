@@ -113,6 +113,19 @@ def transfer_budget(size: int) -> asyncio.Semaphore:
     return budget
 
 
+MAX_DOWNLOAD_INFLIGHT = int(os.environ.get("WZGRAM_DL_INFLIGHT", 8))
+MAX_UPLOAD_INFLIGHT = int(os.environ.get("WZGRAM_UP_INFLIGHT", 6))
+
+
+def inflight_slots(client, name: str, size: int) -> asyncio.Semaphore:
+    slots = client.__dict__.get(name)
+
+    if slots is None:
+        slots = client.__dict__[name] = asyncio.Semaphore(size)
+
+    return slots
+
+
 class ReadAhead:
     """Borrows read-ahead slots from a client-wide budget and always gives them back.
 
@@ -1481,8 +1494,8 @@ class Client(Methods):
                 _is_premium = self.me.is_premium if hasattr(self.me, 'is_premium') else False
 
                 if _is_bot:
-                    dl_pool_size = int(os.environ.get("WZGRAM_DL_POOL_BOT", 5))
-                    dl_workers_per_session = int(os.environ.get("WZGRAM_DL_WORKERS_BOT", 3))
+                    dl_pool_size = int(os.environ.get("WZGRAM_DL_POOL_BOT", 2))
+                    dl_workers_per_session = int(os.environ.get("WZGRAM_DL_WORKERS_BOT", 4))
                     dl_rate = int(os.environ.get("WZGRAM_DL_RATE_BOT", 100))
                     dl_burst = int(os.environ.get("WZGRAM_DL_BURST_BOT", 25))
                 elif _is_premium:
@@ -1491,8 +1504,8 @@ class Client(Methods):
                     dl_rate = int(os.environ.get("WZGRAM_DL_RATE_PREMIUM", 150))
                     dl_burst = int(os.environ.get("WZGRAM_DL_BURST_PREMIUM", 35))
                 else:
-                    dl_pool_size = int(os.environ.get("WZGRAM_DL_POOL_USER", 5))
-                    dl_workers_per_session = int(os.environ.get("WZGRAM_DL_WORKERS_USER", 3))
+                    dl_pool_size = int(os.environ.get("WZGRAM_DL_POOL_USER", 2))
+                    dl_workers_per_session = int(os.environ.get("WZGRAM_DL_WORKERS_USER", 4))
                     dl_rate = int(os.environ.get("WZGRAM_DL_RATE_USER", 100))
                     dl_burst = int(os.environ.get("WZGRAM_DL_BURST_USER", 25))
 
@@ -1531,17 +1544,18 @@ class Client(Methods):
                             return
 
                         try:
-                            await _getfile_rate.acquire()
-                            t0 = time.monotonic()
-                            r = await session.invoke(
-                                raw.functions.upload.GetFile(
-                                    location=location,
-                                    offset=offset,
-                                    limit=chunk_size,
-                                ),
-                                timeout=Session.MEDIA_WAIT_TIMEOUT,
-                                sleep_threshold=30,
-                            )
+                            async with inflight_slots(self, "_download_slots", MAX_DOWNLOAD_INFLIGHT):
+                                await _getfile_rate.acquire()
+                                t0 = time.monotonic()
+                                r = await session.invoke(
+                                    raw.functions.upload.GetFile(
+                                        location=location,
+                                        offset=offset,
+                                        limit=chunk_size,
+                                    ),
+                                    timeout=Session.MEDIA_WAIT_TIMEOUT,
+                                    sleep_threshold=30,
+                                )
                         except BaseException:
                             buffer_slots.release()
                             raise
