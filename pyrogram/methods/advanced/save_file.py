@@ -114,7 +114,7 @@ class SaveFile:
         Raises:
             RPCError: In case of a Telegram RPC error.
         """
-        from pyrogram.client import ReadAhead
+        from pyrogram.client import MAX_UPLOAD_INFLIGHT, ReadAhead, inflight_slots
 
         async with self.save_file_semaphore:
             if path is None:
@@ -137,9 +137,10 @@ class SaveFile:
             async def _send_part(session, data):
                 for attempt in range(MAX_RETRIES):
                     try:
-                        await session.invoke(
-                            data, timeout=Session.MEDIA_WAIT_TIMEOUT
-                        )
+                        async with inflight_slots(self, "_upload_slots", MAX_UPLOAD_INFLIGHT):
+                            await session.invoke(
+                                data, timeout=Session.MEDIA_WAIT_TIMEOUT
+                            )
                         break
                     except StopTransmission:
                         raise
